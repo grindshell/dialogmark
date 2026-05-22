@@ -102,6 +102,19 @@ fn parse_frontmatter_walker(
             i += 1;
             continue;
         }
+        // Any indented non-blank line at the outer level is a fatal parse
+        // error. Block-scalar continuation lines (`|` / `>`) are consumed by
+        // the inner loop below, so a hit here means a list, nested mapping,
+        // or other YAML shape we don't accept.
+        if raw.starts_with(' ') || raw.starts_with('\t') {
+            if emit!(FrontmatterError::UnparseableLine {
+                line: raw.to_string(),
+            }) {
+                break 'outer;
+            }
+            i += 1;
+            continue;
+        }
         if trimmed.starts_with("- ") || trimmed == "-" {
             if emit!(FrontmatterError::ListValue {
                 key: "<top-level>".to_string(),
@@ -403,6 +416,28 @@ mod tests {
             err,
             FrontmatterError::UnparseableLine {
                 line: "bogus line".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn nested_mapping_is_rejected_as_unparseable() {
+        let err = failfast("name: A\nauthor:\n  realname: Bob\n  role: writer\n").unwrap_err();
+        assert_eq!(
+            err,
+            FrontmatterError::UnparseableLine {
+                line: "  realname: Bob".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn indented_line_with_tab_is_rejected() {
+        let err = failfast("name: A\n\tindented\n").unwrap_err();
+        assert_eq!(
+            err,
+            FrontmatterError::UnparseableLine {
+                line: "\tindented".to_string()
             }
         );
     }

@@ -16,7 +16,7 @@
 //! frontend already consumes.
 
 use mlua::Lua;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::blocks::{BlockKind, DialogBlock, extract_blocks};
 use crate::exec::{
@@ -24,7 +24,7 @@ use crate::exec::{
 };
 use crate::state::{DialogNext, DialogState};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DialogTraceEntry {
     pub block_idx: usize,
     /// `"heading"`, `"paragraph"`, or `"code"`.
@@ -41,7 +41,7 @@ pub struct DialogTraceEntry {
     pub is_prelude: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DialogSimulationResult {
     pub blocks_total: usize,
     pub trace: Vec<DialogTraceEntry>,

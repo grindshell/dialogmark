@@ -12,7 +12,7 @@ Metadata about the dialog encoded as Markdown frontmatter. Only supports key/val
 
 ```markdown
 ---
-title: <string>
+name: <string>
 description: <optional string>
 author: <optional string>
 authors: <optional string>

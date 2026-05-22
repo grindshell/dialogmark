@@ -4,9 +4,10 @@
 //! walker. [`DialogError`] wraps it (and will grow more variants when the
 //! simulation pass lands).
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Error, Serialize, Deserialize)]
 pub enum FrontmatterError {
     #[error("Required frontmatter key `name` is missing")]
     MissingName,

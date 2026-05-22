@@ -4,18 +4,19 @@
 //! so the editor's Validate button can show every problem at once.
 
 use pulldown_cmark::{Event, MetadataBlockKind, Options, Parser, Tag, TagEnd, html};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
+use crate::error::FrontmatterError;
 use crate::frontmatter::{DialogFrontmatter, parse_frontmatter_lenient};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedDialog {
     pub frontmatter: DialogFrontmatter,
     pub html: String,
     /// Non-fatal diagnostics (unknown keys, missing/invalid name, list-shaped
     /// author, quoted values, etc). The dialog is still returned with whatever
     /// was parsed so the UI can show the file alongside the warnings.
-    pub parse_errors: Vec<String>,
+    pub parse_errors: Vec<FrontmatterError>,
 }
 
 /// Parse a dialog markdown file. Lifts the YAML frontmatter out, parses it,
@@ -52,7 +53,7 @@ pub fn parse_dialog(content: &str) -> ParsedDialog {
     ParsedDialog {
         frontmatter,
         html: html_out,
-        parse_errors: errors.into_iter().map(|e| e.to_string()).collect(),
+        parse_errors: errors,
     }
 }
 
@@ -66,7 +67,7 @@ mod tests {
         assert!(p.html.is_empty());
         assert!(p.frontmatter.name.is_empty());
         assert_eq!(p.parse_errors.len(), 1);
-        assert!(p.parse_errors[0].contains("name"));
+        assert_eq!(p.parse_errors[0], FrontmatterError::MissingName);
     }
 
     #[test]
@@ -75,7 +76,11 @@ mod tests {
         assert!(p.html.contains("<h1>Hello</h1>"));
         assert!(p.html.contains("<p>world</p>"));
         assert_eq!(p.frontmatter.name, "");
-        assert!(p.parse_errors.iter().any(|e| e.contains("name")));
+        assert!(
+            p.parse_errors
+                .iter()
+                .any(|e| matches!(e, FrontmatterError::MissingName))
+        );
     }
 
     #[test]
@@ -102,8 +107,16 @@ mod tests {
         let p = parse_dialog(src);
         assert_eq!(p.frontmatter.name, "A");
         assert_eq!(p.parse_errors.len(), 2);
-        assert!(p.parse_errors.iter().any(|e| e.contains("Unknown")));
-        assert!(p.parse_errors.iter().any(|e| e.contains("Quoted")));
+        assert!(
+            p.parse_errors
+                .iter()
+                .any(|e| matches!(e, FrontmatterError::UnknownKey { key } if key == "foo"))
+        );
+        assert!(
+            p.parse_errors.iter().any(
+                |e| matches!(e, FrontmatterError::QuotedValue { key } if key == "description")
+            )
+        );
     }
 
     #[test]
