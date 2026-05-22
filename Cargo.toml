@@ -1,0 +1,13 @@
+[package]
+name = "dialogmark"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+editor = []
+
+[dependencies]
+pulldown-cmark = "0.13.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
