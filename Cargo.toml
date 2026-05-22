@@ -7,6 +7,7 @@ edition = "2024"
 editor = []
 
 [dependencies]
+mlua = { version = "0.11.6", features = ["luau-jit", "serialize"] }
 pulldown-cmark = "0.13.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -15,18 +15,25 @@
 mod blocks;
 mod dialog;
 mod error;
+mod exec;
 mod frontmatter;
 mod state;
+mod walker;
 
 pub use blocks::{BlockKind, DialogBlock, extract_blocks};
 pub use dialog::Dialog;
 pub use error::{DialogError, FrontmatterError};
 pub use frontmatter::DialogFrontmatter;
 pub use state::{DialogNext, DialogState};
+pub use walker::{DialogWalker, TerminationReason, WalkStep};
 
 #[cfg(feature = "editor")]
 mod editor;
 #[cfg(feature = "editor")]
+mod sim;
+#[cfg(feature = "editor")]
 pub use editor::{ParsedDialog, parse_dialog};
 #[cfg(feature = "editor")]
 pub use frontmatter::parse_frontmatter_lenient;
+#[cfg(feature = "editor")]
+pub use sim::{DialogSimulationResult, DialogTraceEntry, simulate_dialog};

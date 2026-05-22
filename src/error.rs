@@ -37,4 +37,16 @@ pub enum FrontmatterError {
 pub enum DialogError {
     #[error("frontmatter error: {0}")]
     Frontmatter(#[from] FrontmatterError),
+
+    /// The Luau VM rejected an attempt to create or seed the persistent
+    /// `state` table. Surfaced before any user code has executed; the walk
+    /// never starts.
+    #[error("failed to initialize dialog state: {0}")]
+    StateInit(String),
+
+    /// An mlua call that should not be reachable from user code (e.g. iterating
+    /// the state table for a snapshot) failed. Surfaced as an `Err` rather than
+    /// a termination because it indicates a VM-level fault, not a script bug.
+    #[error("internal Lua error: {0}")]
+    LuaInternal(String),
 }

@@ -1,8 +1,12 @@
 //! Runtime entry point. Lean, fail-fast parse for gameplay.
 
+use mlua::Lua;
+
 use crate::blocks::{DialogBlock, walk_dialog};
 use crate::error::DialogError;
 use crate::frontmatter::{DialogFrontmatter, parse_frontmatter_failfast};
+use crate::state::DialogState;
+use crate::walker::DialogWalker;
 
 #[derive(Debug, Clone)]
 pub struct Dialog {
@@ -20,6 +24,27 @@ impl Dialog {
             frontmatter,
             blocks,
         })
+    }
+
+    /// Start a fresh walk against the caller-supplied Luau VM. The prelude
+    /// runs lazily on the first [`DialogWalker::advance`] call.
+    pub fn walk<'a>(
+        &'a self,
+        lua: &Lua,
+        start_idx: usize,
+    ) -> Result<DialogWalker<'a>, DialogError> {
+        DialogWalker::new(&self.blocks, lua, start_idx)
+    }
+
+    /// Resume a walk from a saved [`DialogState`]. Skips the prelude — it
+    /// already ran in the session that produced the snapshot — and seeds the
+    /// fresh state table with the saved extras.
+    pub fn walk_with_state<'a>(
+        &'a self,
+        lua: &Lua,
+        state: DialogState,
+    ) -> Result<DialogWalker<'a>, DialogError> {
+        DialogWalker::from_state(&self.blocks, lua, state)
     }
 }
 
