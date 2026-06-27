@@ -34,10 +34,45 @@ pub enum FrontmatterError {
     AuthorAliasConflict,
 }
 
+/// A parse-time fault in a **choice set** — the trailing Markdown link-list a
+/// section uses to present the player's options
+/// (CHOICES_AND_SEGMENTED_WALK.md §2/§6). Surfaced fail-fast as a
+/// [`DialogError::ChoiceSet`] on the runtime parse, and (editor feature) with a
+/// line for the author.
+#[derive(Debug, Clone, PartialEq, Eq, Error, Serialize, Deserialize)]
+pub enum ChoiceSetError {
+    /// A choice set is followed by more content in the same section (before the
+    /// next heading / end of input). The blocks after it would be unreachable.
+    #[error("a choice set must be the last block in its section (line {line})")]
+    NonTrailing { line: usize },
+
+    /// A top-level list looks like a choice set but mixes single-link items with
+    /// non-link items. Either every item is a `[label](#Target)` link (a choice
+    /// set) or none are (ordinary prose, skipped); a mix is a malformed document.
+    #[error("a choice-set list mixes links and non-links (line {line})")]
+    Malformed { line: usize },
+}
+
+impl ChoiceSetError {
+    /// The source line the fault is attributed to (for fail-fast ordering and
+    /// the editor's author-facing diagnostics).
+    pub fn line(&self) -> usize {
+        match self {
+            ChoiceSetError::NonTrailing { line } | ChoiceSetError::Malformed { line } => *line,
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum DialogError {
     #[error("frontmatter error: {0}")]
     Frontmatter(#[from] FrontmatterError),
+
+    /// A choice set (trailing link-list) was malformed or non-trailing
+    /// (CHOICES_AND_SEGMENTED_WALK.md §6). A parse-time fault: the dialog never
+    /// walks.
+    #[error("choice set error: {0}")]
+    ChoiceSet(#[from] ChoiceSetError),
 
     /// The Luau VM rejected an attempt to create or seed the persistent
     /// `state` table. Surfaced before any user code has executed; the walk

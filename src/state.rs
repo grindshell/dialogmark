@@ -14,6 +14,27 @@ pub struct DialogNext {
     pub name: Option<String>,
 }
 
+/// One option surfaced to the caller at a choice point
+/// (CHOICES_AND_SEGMENTED_WALK.md §3/§4.3): from a scripted
+/// `state.next = { t = "present", options = … }` or derived from a trailing
+/// choice set. The caller renders these, then hands the chosen one's `id` (and
+/// `target`) back to [`crate::Dialog::resume`]. `note` / `disabled` are opaque
+/// presentation hints dialogmark passes through untouched and does **not**
+/// enforce — a consumer that gates an option re-checks on selection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PresentedOption {
+    /// The token the caller hands back on selection (unique within one present).
+    pub id: String,
+    /// Player-facing choice text.
+    pub label: String,
+    /// The heading text to resume the walk at (exact-text, like a `goto`).
+    pub target: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DialogState {
     pub idx: usize,

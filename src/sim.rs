@@ -13,21 +13,43 @@
 //!
 //! Termination reason strings ("end_of_dialog", "exit", "goto_target_missing",
 //! "step_limit", "execution_error", "prelude_invalid") match what the editor
-//! frontend already consumes.
+//! frontend already consumes; "present" is added when the linear walk stops at
+//! a choice point (a `present` directive or a trailing choice set — interactive
+//! branch preview is deferred, CHOICES_AND_SEGMENTED_WALK.md §5).
 
 use mlua::Lua;
 use serde::{Deserialize, Serialize};
 
 use crate::blocks::{BlockKind, DialogBlock, extract_blocks};
 use crate::exec::{
-    self, MAX_SIMULATION_STEPS, build_state_snapshot, preview_source, refresh_managed_fields,
+    self, MAX_SIMULATION_STEPS, NextDirective, build_state_snapshot, create_walk_env,
+    preview_source, refresh_managed_fields,
 };
 use crate::state::{DialogNext, DialogState};
+
+/// Project a live [`NextDirective`] onto the serialized [`DialogNext`] the trace
+/// surfaces (a `present` directive collapses to `{ t = "present" }`).
+fn directive_to_next(d: &NextDirective) -> DialogNext {
+    match d {
+        NextDirective::Goto { name } => DialogNext {
+            t: "goto".to_string(),
+            name: name.clone(),
+        },
+        NextDirective::Exit => DialogNext {
+            t: "exit".to_string(),
+            name: None,
+        },
+        NextDirective::Present(_) => DialogNext {
+            t: "present".to_string(),
+            name: None,
+        },
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DialogTraceEntry {
     pub block_idx: usize,
-    /// `"heading"`, `"paragraph"`, or `"code"`.
+    /// `"heading"`, `"paragraph"`, `"code"`, or `"choices"`.
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub heading_text: Option<String>,
@@ -51,10 +73,10 @@ pub struct DialogSimulationResult {
     pub terminated_message: Option<String>,
 }
 
-/// Walk `content` from `start_idx`, executing every fenced code block as
-/// `function(state) … end` against the caller-supplied `lua` VM. Returns the
-/// per-block trace and the final state. See the module docs for prelude /
-/// termination semantics.
+/// Walk `content` from `start_idx`, executing every fenced code block as a
+/// chunk against a per-walk environment over the caller-supplied `lua` VM.
+/// Returns the per-block trace and the final state. See the module docs for
+/// prelude / termination semantics.
 pub fn simulate_dialog(content: &str, lua: &Lua, start_idx: usize) -> DialogSimulationResult {
     let blocks = extract_blocks(content);
     let blocks_total = blocks.len();
@@ -93,8 +115,24 @@ pub fn simulate_dialog(content: &str, lua: &Lua, start_idx: usize) -> DialogSimu
         }
     };
 
+    // One per-walk environment for the whole simulation: blocks share it (so a
+    // global one block sets is visible to later blocks, the editor's existing
+    // behavior) and its `__index` falls through to the VM globals.
+    let env = match create_walk_env(lua, &lua.globals(), &state_t) {
+        Ok(e) => e,
+        Err(e) => {
+            return DialogSimulationResult {
+                blocks_total,
+                trace: vec![],
+                final_state: DialogState::default(),
+                terminated_reason: "execution_error".to_string(),
+                terminated_message: Some(format!("failed to create walk environment: {e}")),
+            };
+        }
+    };
+
     let mut trace: Vec<DialogTraceEntry> = Vec::new();
-    let mut last_prelude_next: Option<DialogNext> = None;
+    let mut last_prelude_next: Option<NextDirective> = None;
 
     // Prelude: run every code block in order. Per Dialogmark divergence, the
     // last block's state.next can redirect or terminate the walk (the editor
@@ -114,10 +152,15 @@ pub fn simulate_dialog(content: &str, lua: &Lua, start_idx: usize) -> DialogSimu
             is_prelude: true,
         };
 
-        match exec::run_code_block(lua, &state_t, &b.text, b.idx, b.idx, &None, &None) {
+        match exec::run_code_block(lua, &env, &state_t, &b.text, b.idx, b.idx, &None, &None) {
             Ok(next_opt) => {
-                entry.state_after =
-                    build_state_snapshot(&state_t, b.idx, &None, &None, next_opt.clone());
+                entry.state_after = build_state_snapshot(
+                    &state_t,
+                    b.idx,
+                    &None,
+                    &None,
+                    next_opt.as_ref().map(directive_to_next),
+                );
                 last_prelude_next = next_opt;
             }
             Err(msg) => {
@@ -179,7 +222,7 @@ pub fn simulate_dialog(content: &str, lua: &Lua, start_idx: usize) -> DialogSimu
     let mut steps: usize = 0;
     let mut terminated_reason = "end_of_dialog".to_string();
     let mut terminated_message: Option<String> = None;
-    let mut last_next: Option<DialogNext> = None;
+    let mut last_next: Option<NextDirective> = None;
 
     loop {
         if cursor >= blocks_total {
@@ -202,6 +245,7 @@ pub fn simulate_dialog(content: &str, lua: &Lua, start_idx: usize) -> DialogSimu
                 BlockKind::Heading => "heading",
                 BlockKind::Paragraph => "paragraph",
                 BlockKind::Code => "code",
+                BlockKind::Choices => "choices",
             }
             .to_string(),
             heading_text: if block.kind == BlockKind::Heading {
@@ -215,8 +259,12 @@ pub fn simulate_dialog(content: &str, lua: &Lua, start_idx: usize) -> DialogSimu
             is_prelude: false,
         };
 
-        let mut block_next: Option<DialogNext> = None;
+        let mut block_next: Option<NextDirective> = None;
         let mut hit_error = false;
+        // A choice point the linear simulator stops at (a `present` directive or
+        // a trailing choice set): the option labels for the message. Interactive
+        // branch preview is the editor's deferred work (CHOICES_AND_SEGMENTED_WALK.md §5).
+        let mut present_labels: Option<Vec<String>> = None;
 
         match block.kind {
             BlockKind::Heading => {
@@ -224,9 +272,19 @@ pub fn simulate_dialog(content: &str, lua: &Lua, start_idx: usize) -> DialogSimu
                 current_heading = Some(block.text.clone());
             }
             BlockKind::Paragraph => {}
+            BlockKind::Choices => {
+                present_labels = Some(
+                    block
+                        .choices
+                        .as_ref()
+                        .map(|items| items.iter().map(|c| c.label.clone()).collect())
+                        .unwrap_or_default(),
+                );
+            }
             BlockKind::Code => {
                 match exec::run_code_block(
                     lua,
+                    &env,
                     &state_t,
                     &block.text,
                     block.idx,
@@ -235,6 +293,9 @@ pub fn simulate_dialog(content: &str, lua: &Lua, start_idx: usize) -> DialogSimu
                     &previous_heading,
                 ) {
                     Ok(next_opt) => {
+                        if let Some(NextDirective::Present(opts)) = &next_opt {
+                            present_labels = Some(opts.iter().map(|o| o.label.clone()).collect());
+                        }
                         block_next = next_opt;
                     }
                     Err(msg) => {
@@ -252,51 +313,56 @@ pub fn simulate_dialog(content: &str, lua: &Lua, start_idx: usize) -> DialogSimu
             cursor,
             &current_heading,
             &previous_heading,
-            block_next.clone(),
+            block_next.as_ref().map(directive_to_next),
         );
-        last_next = block_next.clone();
+        last_next = block_next;
         trace.push(entry);
 
         if hit_error {
             break;
         }
 
-        if let Some(n) = &block_next {
-            match n.t.as_str() {
-                "exit" => {
-                    terminated_reason = "exit".to_string();
+        if let Some(labels) = present_labels {
+            terminated_reason = "present".to_string();
+            terminated_message = Some(if labels.is_empty() {
+                "choice point reached".to_string()
+            } else {
+                format!("choice point: {}", labels.join(", "))
+            });
+            break;
+        }
+
+        match &last_next {
+            Some(NextDirective::Exit) => {
+                terminated_reason = "exit".to_string();
+                break;
+            }
+            Some(NextDirective::Goto { name }) => {
+                let Some(target_name) = name else {
+                    terminated_reason = "goto_target_missing".to_string();
+                    terminated_message =
+                        Some("state.next.t == 'goto' but state.next.name is missing".to_string());
                     break;
-                }
-                "goto" => {
-                    let Some(target_name) = &n.name else {
+                };
+                match exec::resolve_goto(&blocks, target_name) {
+                    Some(target) => {
+                        cursor = target.idx;
+                    }
+                    None => {
                         terminated_reason = "goto_target_missing".to_string();
-                        terminated_message = Some(
-                            "state.next.t == 'goto' but state.next.name is missing".to_string(),
-                        );
+                        terminated_message = Some(format!("no heading named {target_name:?}"));
                         break;
-                    };
-                    match exec::resolve_goto(&blocks, target_name) {
-                        Some(target) => {
-                            cursor = target.idx;
-                        }
-                        None => {
-                            terminated_reason = "goto_target_missing".to_string();
-                            terminated_message = Some(format!("no heading named {target_name:?}"));
-                            break;
-                        }
                     }
                 }
-                other => {
-                    terminated_reason = "execution_error".to_string();
-                    terminated_message = Some(format!("unsupported state.next.t {other:?}"));
+            }
+            // A present directive is handled via `present_labels` above.
+            Some(NextDirective::Present(_)) => break,
+            None => {
+                cursor += 1;
+                if cursor >= blocks_total {
+                    terminated_reason = "end_of_dialog".to_string();
                     break;
                 }
-            }
-        } else {
-            cursor += 1;
-            if cursor >= blocks_total {
-                terminated_reason = "end_of_dialog".to_string();
-                break;
             }
         }
     }
@@ -306,7 +372,7 @@ pub fn simulate_dialog(content: &str, lua: &Lua, start_idx: usize) -> DialogSimu
         cursor,
         &current_heading,
         &previous_heading,
-        last_next,
+        last_next.as_ref().map(directive_to_next),
     );
 
     DialogSimulationResult {
@@ -322,34 +388,32 @@ pub fn simulate_dialog(content: &str, lua: &Lua, start_idx: usize) -> DialogSimu
 /// new cursor on success, or `(terminated_reason, terminated_message)` to
 /// surface as the simulation result.
 fn resolve_after_prelude(
-    last_next: Option<DialogNext>,
+    last_next: Option<NextDirective>,
     blocks: &[DialogBlock],
     walk_start_default: usize,
 ) -> Result<usize, (String, Option<String>)> {
     match last_next {
         None => Ok(walk_start_default),
-        Some(n) => match n.t.as_str() {
-            "exit" => Err(("exit".to_string(), None)),
-            "goto" => {
-                let Some(name) = n.name else {
-                    return Err((
-                        "goto_target_missing".to_string(),
-                        Some("state.next.t == 'goto' but state.next.name is missing".to_string()),
-                    ));
-                };
-                match exec::resolve_goto(blocks, &name) {
-                    Some(target) => Ok(target.idx),
-                    None => Err((
-                        "goto_target_missing".to_string(),
-                        Some(format!("no heading named {name:?}")),
-                    )),
-                }
+        Some(NextDirective::Exit) => Err(("exit".to_string(), None)),
+        Some(NextDirective::Goto { name }) => {
+            let Some(name) = name else {
+                return Err((
+                    "goto_target_missing".to_string(),
+                    Some("state.next.t == 'goto' but state.next.name is missing".to_string()),
+                ));
+            };
+            match exec::resolve_goto(blocks, &name) {
+                Some(target) => Ok(target.idx),
+                None => Err((
+                    "goto_target_missing".to_string(),
+                    Some(format!("no heading named {name:?}")),
+                )),
             }
-            other => Err((
-                "execution_error".to_string(),
-                Some(format!("unsupported state.next.t {other:?}")),
-            )),
-        },
+        }
+        Some(NextDirective::Present(_)) => Err((
+            "execution_error".to_string(),
+            Some("state.next = { t = \"present\" } is not allowed in the prelude".to_string()),
+        )),
     }
 }
 

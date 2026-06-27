@@ -20,12 +20,12 @@ mod frontmatter;
 mod state;
 mod walker;
 
-pub use blocks::{BlockKind, DialogBlock, extract_blocks};
+pub use blocks::{BlockKind, ChoiceItem, DialogBlock, extract_blocks};
 pub use dialog::Dialog;
-pub use error::{DialogError, FrontmatterError};
+pub use error::{ChoiceSetError, DialogError, FrontmatterError};
 pub use frontmatter::DialogFrontmatter;
-pub use state::{DialogNext, DialogState};
-pub use walker::{DialogWalker, TerminationReason, WalkStep};
+pub use state::{DialogNext, DialogState, PresentedOption};
+pub use walker::{DialogWalker, Narration, SegmentStop, TerminationReason, WalkStep};
 
 #[cfg(feature = "editor")]
 mod editor;

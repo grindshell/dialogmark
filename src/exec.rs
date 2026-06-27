@@ -2,16 +2,16 @@
 //! ([`crate::walker`]) and the editor simulator ([`crate::sim`]).
 //!
 //! Nothing here is public. The two consumer modules call into these helpers so
-//! a script change (e.g. tightening `read_next` or tweaking the wrapper
-//! template) stays in lock-step across the runtime and editor surfaces.
+//! a script change (e.g. tightening `read_next_directive` or the per-walk
+//! environment) stays in lock-step across the runtime and editor surfaces.
 
 use std::collections::BTreeMap;
 
-use mlua::{Function, Lua, Table, Value};
+use mlua::{Lua, Table, Value};
 
 use crate::blocks::{BlockKind, DialogBlock};
 use crate::error::DialogError;
-use crate::state::{DialogNext, DialogState};
+use crate::state::{DialogNext, DialogState, PresentedOption};
 
 /// Maximum number of block visits before a walk aborts. Catches goto loops
 /// between headings; does *not* catch infinite loops inside a single code
@@ -25,7 +25,27 @@ pub(crate) const PREVIEW_MAX_CHARS: usize = 120;
 /// Depth cap on Lua↔JSON conversion. Defends against cycles in user tables.
 pub(crate) const JSON_MAX_DEPTH: usize = 10;
 
-const MANAGED_KEYS: &[&str] = &["idx", "current_heading", "previous_heading", "next"];
+const MANAGED_KEYS: &[&str] = &[
+    "idx",
+    "current_heading",
+    "previous_heading",
+    "next",
+    "choice",
+];
+
+/// A parsed `state.next` directive read after a code block runs. The walker /
+/// simulator decides what each means (goto/exit terminate or redirect; present
+/// pauses for the caller). Kept apart from the serialized [`DialogNext`] so the
+/// `present` form — with its options — never has to round-trip through a saved
+/// snapshot (it is always resolved within the producing segment).
+pub(crate) enum NextDirective {
+    /// `{ t = "goto", name = X }` — jump to heading `X` (None if `name` absent).
+    Goto { name: Option<String> },
+    /// `{ t = "exit" }` — end the walk.
+    Exit,
+    /// `{ t = "present", options = … }` — pause and surface choices.
+    Present(Vec<PresentedOption>),
+}
 
 /// Allocate the persistent `state` table for a fresh walk.
 pub(crate) fn create_state_table(lua: &Lua) -> Result<Table, DialogError> {
@@ -33,9 +53,35 @@ pub(crate) fn create_state_table(lua: &Lua) -> Result<Table, DialogError> {
         .map_err(|e| DialogError::StateInit(format!("create_table: {e}")))
 }
 
+/// Build a per-walk environment table (CHOICES_AND_SEGMENTED_WALK.md §4.1): it
+/// carries `state` as the block-visible global and chains its `__index` to the
+/// caller-supplied `base_env` (stdlib + any host modules). A block's global
+/// writes land here — visible to later blocks of the *same* walk only — and
+/// reads fall through to `base_env`, so many walks share one VM without
+/// colliding and nothing a walk writes leaks into the base.
+pub(crate) fn create_walk_env(
+    lua: &Lua,
+    base_env: &Table,
+    state_t: &Table,
+) -> Result<Table, DialogError> {
+    let env = lua
+        .create_table()
+        .map_err(|e| DialogError::StateInit(format!("walk env: {e}")))?;
+    env.set("state", state_t.clone())
+        .map_err(|e| DialogError::StateInit(format!("walk env state: {e}")))?;
+    let mt = lua
+        .create_table()
+        .map_err(|e| DialogError::StateInit(format!("walk env meta: {e}")))?;
+    mt.set("__index", base_env.clone())
+        .map_err(|e| DialogError::StateInit(format!("walk env __index: {e}")))?;
+    env.set_metatable(Some(mt))
+        .map_err(|e| DialogError::StateInit(format!("walk env metatable: {e}")))?;
+    Ok(env)
+}
+
 /// Push every entry of `extras` onto `state_t` as a user-defined field.
-/// Used by `walk_with_state` to restore a saved snapshot. Managed keys are
-/// silently filtered — they're owned by the runtime, not the caller.
+/// Used by a resume to restore a saved snapshot. Managed keys are silently
+/// filtered — they're owned by the runtime, not the caller.
 pub(crate) fn seed_extras(
     lua: &Lua,
     state_t: &Table,
@@ -76,59 +122,119 @@ pub(crate) fn refresh_managed_fields(
     Ok(())
 }
 
-/// Lift `source` into `function(state) … end`, refresh managed fields, call
-/// the function, and read back `state.next`. The user's script source is
-/// inserted verbatim between the function signature and `end`.
+/// Run `source` as a chunk against the per-walk environment `env`, refreshing
+/// the managed fields first and reading back `state.next` after. The source
+/// runs verbatim — `state` is reached as an env global (set by
+/// [`create_walk_env`]), not as a parameter.
 ///
-/// Returns `Ok(Some(next))` if the script set `state.next` to a goto/exit
-/// redirect, `Ok(None)` if it didn't, and `Err(String)` with a formatted Lua
-/// error on syntax or runtime failure.
+/// Returns `Ok(Some(directive))` if the script set `state.next`, `Ok(None)` if
+/// it didn't, and `Err(String)` with a formatted Lua error on syntax / runtime
+/// failure or a malformed `state.next`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_code_block(
     lua: &Lua,
+    env: &Table,
     state_t: &Table,
     source: &str,
     block_idx: usize,
     cursor: usize,
     current_heading: &Option<String>,
     previous_heading: &Option<String>,
-) -> Result<Option<DialogNext>, String> {
+) -> Result<Option<NextDirective>, String> {
     refresh_managed_fields(state_t, cursor, current_heading, previous_heading)
         .map_err(|e| format!("state setup: {e}"))?;
 
-    let wrapped = format!("return function(state)\n{source}\nend");
-    let f: Function = lua
-        .load(&wrapped)
+    lua.load(source)
         .set_name(format!("dialog-block-{block_idx}"))
-        .eval()
+        .set_environment(env.clone())
+        .exec()
         .map_err(|e| e.to_string())?;
 
-    f.call::<()>(state_t.clone()).map_err(|e| e.to_string())?;
-
-    read_next(state_t).map_err(|e| format!("invalid state.next: {e}"))
+    read_next_directive(state_t).map_err(|e| format!("invalid state.next: {e}"))
 }
 
-/// Read `state.next`. Returns `None` if nil. Returns `Err` if the value is
-/// neither nil nor a properly shaped `{ t, name? }` table.
-pub(crate) fn read_next(state_t: &Table) -> mlua::Result<Option<DialogNext>> {
+/// Read `state.next`. Returns `None` if nil, the parsed [`NextDirective`] for a
+/// `{ t = "goto"|"exit"|"present", … }` table, and `Err` for any other value or
+/// a malformed directive (mapped to an execution error by the caller).
+pub(crate) fn read_next_directive(state_t: &Table) -> mlua::Result<Option<NextDirective>> {
     let nv: Value = state_t.get("next")?;
     match nv {
         Value::Nil => Ok(None),
         Value::Table(nt) => {
             let t: String = nt.get("t")?;
-            let name: Option<String> = match nt.get::<Value>("name")? {
-                Value::String(s) => Some(s.to_str()?.to_string()),
-                Value::Nil => None,
-                _ => {
-                    return Err(mlua::Error::RuntimeError(
-                        "state.next.name must be a string or nil".to_string(),
-                    ));
+            match t.as_str() {
+                "goto" => {
+                    let name: Option<String> = match nt.get::<Value>("name")? {
+                        Value::String(s) => Some(s.to_str()?.to_string()),
+                        Value::Nil => None,
+                        _ => {
+                            return Err(mlua::Error::RuntimeError(
+                                "state.next.name must be a string or nil".to_string(),
+                            ));
+                        }
+                    };
+                    Ok(Some(NextDirective::Goto { name }))
                 }
-            };
-            Ok(Some(DialogNext { t, name }))
+                "exit" => Ok(Some(NextDirective::Exit)),
+                "present" => Ok(Some(NextDirective::Present(read_present_options(&nt)?))),
+                other => Err(mlua::Error::RuntimeError(format!(
+                    "unsupported state.next.t {other:?}"
+                ))),
+            }
         }
         _ => Err(mlua::Error::RuntimeError(
             "state.next must be a table or nil".to_string(),
         )),
+    }
+}
+
+/// Read and validate a `present` directive's `options` array
+/// (CHOICES_AND_SEGMENTED_WALK.md §3): a non-empty array of
+/// `{ id, label, target, note?, disabled? }` with unique ids.
+fn read_present_options(nt: &Table) -> mlua::Result<Vec<PresentedOption>> {
+    let Value::Table(opts_t) = nt.get::<Value>("options")? else {
+        return Err(mlua::Error::RuntimeError(
+            "state.next.options must be an array".to_string(),
+        ));
+    };
+    let mut seen: BTreeMap<String, ()> = BTreeMap::new();
+    let mut out = Vec::new();
+    for (i, item) in opts_t.sequence_values::<Table>().enumerate() {
+        let item = item?;
+        let id = req_string(&item, "id", i)?;
+        let label = req_string(&item, "label", i)?;
+        let target = req_string(&item, "target", i)?;
+        let note: Option<String> = item.get::<Option<String>>("note")?;
+        let disabled: bool = item.get::<Option<bool>>("disabled")?.unwrap_or(false);
+        if seen.insert(id.clone(), ()).is_some() {
+            return Err(mlua::Error::RuntimeError(format!(
+                "duplicate present option id {id:?}"
+            )));
+        }
+        out.push(PresentedOption {
+            id,
+            label,
+            target,
+            note,
+            disabled,
+        });
+    }
+    if out.is_empty() {
+        return Err(mlua::Error::RuntimeError(
+            "state.next.options must be a non-empty array".to_string(),
+        ));
+    }
+    Ok(out)
+}
+
+/// Read a required string field of a `present` option, with a clear error.
+fn req_string(t: &Table, key: &str, i: usize) -> mlua::Result<String> {
+    match t.get::<Value>(key)? {
+        Value::String(s) => Ok(s.to_str()?.to_string()),
+        _ => Err(mlua::Error::RuntimeError(format!(
+            "present option #{} is missing string `{key}`",
+            i + 1
+        ))),
     }
 }
 
@@ -397,5 +503,137 @@ mod tests {
         assert!(!out.contains_key("current_heading"));
         assert!(!out.contains_key("previous_heading"));
         assert_eq!(out["tag"], serde_json::json!("keep"));
+    }
+
+    // --- Phase 0 feasibility gate (CHOICES_AND_SEGMENTED_WALK.md §4.1 / §8) -----
+    //
+    // The per-walk environment isolation rests on `Chunk::set_environment` on
+    // Luau. These two tests pin the behavior the segmented walk depends on so an
+    // mlua/Luau upgrade that breaks it fails loudly. They model the target design
+    // (a block runs as a raw chunk against a per-walk env table whose `__index`
+    // chains to a caller base, with `state` injected as an env field) — the same
+    // sandbox shape the editor's skill runner uses in production.
+
+    /// A block's global writes land in its per-walk env (not VM globals); a later
+    /// block of the *same* walk reads them; a *fresh* walk's env cannot; reads of
+    /// host-injected values and stdlib fall through `__index` to the base.
+    #[test]
+    fn gate_per_walk_env_isolation_and_fallthrough() {
+        let lua = Lua::new();
+
+        // The caller-supplied base: stdlib via `__index -> globals`, plus a
+        // host-injected read-only value (stands in for `ctx` / a host module).
+        let base = lua.create_table().unwrap();
+        base.set("HOST_CONST", 100i64).unwrap();
+        let base_mt = lua.create_table().unwrap();
+        base_mt.set("__index", lua.globals()).unwrap();
+        base.set_metatable(Some(base_mt)).unwrap();
+
+        let make_env = |state_t: &Table| -> Table {
+            let env = lua.create_table().unwrap();
+            env.set("state", state_t.clone()).unwrap();
+            let mt = lua.create_table().unwrap();
+            mt.set("__index", base.clone()).unwrap();
+            env.set_metatable(Some(mt)).unwrap();
+            env
+        };
+
+        // Walk 1: block A defines helper globals; block B reads them back, plus
+        // the host const and a stdlib module (proving fallthrough both levels).
+        let s1 = lua.create_table().unwrap();
+        let env1 = make_env(&s1);
+        lua.load("HELPER = function() return 42 end\nLESSONS = { 1, 2, 3 }")
+            .set_environment(env1.clone())
+            .exec()
+            .unwrap();
+        lua.load(
+            "state.helper = HELPER()\nstate.count = #LESSONS\nstate.host = HOST_CONST\nstate.has_str = (string ~= nil)",
+        )
+        .set_environment(env1.clone())
+        .exec()
+        .unwrap();
+        assert_eq!(
+            s1.get::<i64>("helper").unwrap(),
+            42,
+            "later block sees earlier block's helper"
+        );
+        assert_eq!(
+            s1.get::<i64>("count").unwrap(),
+            3,
+            "later block sees earlier block's table"
+        );
+        assert_eq!(
+            s1.get::<i64>("host").unwrap(),
+            100,
+            "host value falls through __index"
+        );
+        assert!(
+            s1.get::<bool>("has_str").unwrap(),
+            "stdlib falls through to globals"
+        );
+
+        // Walk 2 in a fresh env: walk 1's helpers are invisible; base still is.
+        let s2 = lua.create_table().unwrap();
+        let env2 = make_env(&s2);
+        lua.load("state.helper_nil = (HELPER == nil)\nstate.host = HOST_CONST")
+            .set_environment(env2.clone())
+            .exec()
+            .unwrap();
+        assert!(
+            s2.get::<bool>("helper_nil").unwrap(),
+            "a fresh walk cannot see another walk's globals"
+        );
+        assert_eq!(s2.get::<i64>("host").unwrap(), 100);
+
+        // Neither the shared base nor the VM globals are polluted by a walk's writes.
+        assert!(
+            lua.globals().get::<Value>("HELPER").unwrap().is_nil(),
+            "writes must not leak to VM globals"
+        );
+        assert!(
+            base.get::<Value>("HELPER").unwrap().is_nil(),
+            "writes must not leak to the base env"
+        );
+    }
+
+    /// The §8 optimization probe: a block source compiled to Luau bytecode
+    /// **once** (via `mlua::Compiler` — Luau has no `Function::dump`) can be
+    /// re-bound to a fresh per-walk env on each run, each run seeing its own
+    /// injected values and writing only into its own env. If this fails on the
+    /// pinned mlua, the implementation falls back to recompiling source per
+    /// segment (correct, slightly slower) — so this test documents which path is
+    /// available rather than gating the feature.
+    #[test]
+    fn gate_bytecode_chunk_rebinds_env_per_run() {
+        let lua = Lua::new();
+        let bytecode = mlua::Compiler::new()
+            .compile("state.seen = MARK\nWROTE = true")
+            .expect("Luau compiles the block to bytecode");
+
+        let run = |mark: i64| -> (Table, Table) {
+            let st = lua.create_table().unwrap();
+            let env = lua.create_table().unwrap();
+            env.set("state", st.clone()).unwrap();
+            env.set("MARK", mark).unwrap();
+            let mt = lua.create_table().unwrap();
+            mt.set("__index", lua.globals()).unwrap();
+            env.set_metatable(Some(mt)).unwrap();
+            lua.load(bytecode.as_slice())
+                .set_environment(env.clone())
+                .exec()
+                .expect("precompiled bytecode re-binds to a fresh env");
+            (st, env)
+        };
+
+        let (sa, ea) = run(7);
+        assert_eq!(sa.get::<i64>("seen").unwrap(), 7);
+        assert!(ea.get::<bool>("WROTE").unwrap());
+        let (sb, eb) = run(9);
+        assert_eq!(
+            sb.get::<i64>("seen").unwrap(),
+            9,
+            "same bytecode reads the new env's value"
+        );
+        assert!(eb.get::<bool>("WROTE").unwrap());
     }
 }
