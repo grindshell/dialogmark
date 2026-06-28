@@ -25,6 +25,16 @@ use crate::error::DialogError;
 use crate::exec::{self, MAX_SIMULATION_STEPS, NextDirective};
 use crate::state::{DialogState, PresentedOption};
 
+/// The reserved option id of the synthetic "Continue" choice
+/// [`DialogWalker::advance_page`] surfaces at a heading boundary (the paged-walk
+/// page break). It is not an author-defined option — the caller resumes at the
+/// option's `target` like any other — and cannot collide with an author option,
+/// since a page break only fires where the section presented no options at all.
+pub const PAGE_ADVANCE_ID: &str = "__page__";
+
+/// The player-facing label of the synthetic page-advance option.
+const PAGE_ADVANCE_LABEL: &str = "Continue";
+
 /// One narration element collected while walking a segment
 /// (CHOICES_AND_SEGMENTED_WALK.md §4.3). Borrows from the parsed
 /// [`Dialog`](crate::Dialog).
@@ -260,6 +270,83 @@ impl<'a> DialogWalker<'a> {
                 Step::Narration(n) => narration.push(n),
                 Step::Present(opts) => return Ok((narration, SegmentStop::Present(opts))),
                 Step::Advanced => continue,
+                Step::Terminated(r) => {
+                    let r = self.finish(r);
+                    return Ok((narration, SegmentStop::Terminated(r)));
+                }
+            }
+        }
+    }
+
+    /// Advance one **page** — like [`advance_segment`](Self::advance_segment),
+    /// but also pausing at a heading boundary (CHOICES_AND_SEGMENTED_WALK.md §4.3
+    /// "Paged walk"). When a section falls through to the next `#` heading with no
+    /// choice point and no `state.next`, the walk stops and returns
+    /// `SegmentStop::Present` with a single synthetic [`PAGE_ADVANCE_ID`]
+    /// "Continue" option targeting that heading, so a linear dialog pages one
+    /// section per call. A `goto` is page-transparent (its landing section opens
+    /// as this page's own section); an explicit `present` / choice set / `exit` /
+    /// end-of-dialog behaves exactly as in `advance_segment`.
+    pub fn advance_page(
+        &mut self,
+        lua: &Lua,
+    ) -> Result<(Vec<Narration<'a>>, SegmentStop), DialogError> {
+        let mut narration: Vec<Narration<'a>> = Vec::new();
+        if let Some(r) = &self.done {
+            return Ok((narration, SegmentStop::Terminated(r.clone())));
+        }
+        self.ensure_started(lua);
+        if let Some(r) = &self.done {
+            return Ok((narration, SegmentStop::Terminated(r.clone())));
+        }
+
+        // True once this page's own opening heading has been consumed; the *next*
+        // heading reached by fall-through is then a page boundary. A goto clears
+        // it (the jumped-to heading opens a fresh section, no break), so an
+        // explicit redirect stays page-transparent — only a natural fall-through
+        // into the following section pages.
+        let mut page_opened = false;
+        loop {
+            if self.cursor >= self.blocks.len() {
+                let r = self.finish(TerminationReason::EndOfDialog);
+                return Ok((narration, SegmentStop::Terminated(r)));
+            }
+            if self.steps >= MAX_SIMULATION_STEPS {
+                let r = self.finish(TerminationReason::StepLimit);
+                return Ok((narration, SegmentStop::Terminated(r)));
+            }
+            // A heading reached after this page's opening heading is the next
+            // section: page here with a synthetic Continue, leaving the cursor on
+            // the heading so the resume lands at its text (like the unadvanced
+            // cursor at a `Choices` pause).
+            if page_opened && self.blocks[self.cursor].kind == BlockKind::Heading {
+                let opt = PresentedOption {
+                    id: PAGE_ADVANCE_ID.to_string(),
+                    label: PAGE_ADVANCE_LABEL.to_string(),
+                    target: self.blocks[self.cursor].text.clone(),
+                    note: None,
+                    disabled: false,
+                };
+                return Ok((narration, SegmentStop::Present(vec![opt])));
+            }
+
+            let before = self.cursor;
+            self.steps += 1;
+            match self.step_block(lua) {
+                Step::Narration(n @ Narration::Heading(_)) => {
+                    page_opened = true;
+                    narration.push(n);
+                }
+                Step::Narration(p) => narration.push(p),
+                Step::Present(opts) => return Ok((narration, SegmentStop::Present(opts))),
+                Step::Advanced => {
+                    // A goto/jump (cursor moved by other than +1) opens a fresh
+                    // page section: the heading it lands on is consumed, not paged.
+                    if self.cursor != before + 1 {
+                        page_opened = false;
+                    }
+                    continue;
+                }
                 Step::Terminated(r) => {
                     let r = self.finish(r);
                     return Ok((narration, SegmentStop::Terminated(r)));
@@ -884,5 +971,102 @@ mod tests {
         );
         // Nothing leaked into the shared VM globals.
         assert!(lua.globals().get::<Value>("MARK").unwrap().is_nil());
+    }
+
+    // --- paged walk (advance_page, CHOICES_AND_SEGMENTED_WALK.md §4.3) ---------
+
+    #[test]
+    fn page_walk_breaks_at_each_heading() {
+        let d =
+            parse("# One\n\nfirst page.\n\n# Two\n\nsecond page.\n\n# Three\n\nthird page.\n");
+        let lua = Lua::new();
+        let mut w = d.walk(&lua, base_env(&lua), 0).unwrap();
+
+        // Page 1: the opening section, paused with a synthetic Continue to #Two.
+        let (ns, stop) = w.advance_page(&lua).unwrap();
+        assert_eq!(narration_text(&ns), vec!["One", "first page."]);
+        let opts = match stop {
+            SegmentStop::Present(o) => o,
+            other => panic!("expected a page break, got {other:?}"),
+        };
+        assert_eq!(opts.len(), 1);
+        assert_eq!(opts[0].id, PAGE_ADVANCE_ID);
+        assert_eq!(opts[0].label, "Continue");
+        assert_eq!(opts[0].target, "Two");
+
+        // Page 2: resume at #Two, paused with a Continue to #Three.
+        let snap = w.snapshot();
+        let mut w2 = d
+            .resume(
+                &lua,
+                base_env(&lua),
+                snap,
+                "Two",
+                Some(PAGE_ADVANCE_ID.to_string()),
+            )
+            .unwrap();
+        let (ns, stop) = w2.advance_page(&lua).unwrap();
+        assert_eq!(narration_text(&ns), vec!["Two", "second page."]);
+        let opts = match stop {
+            SegmentStop::Present(o) => o,
+            other => panic!("expected a page break, got {other:?}"),
+        };
+        assert_eq!(opts[0].target, "Three");
+
+        // Page 3: the final section walks off the end and closes.
+        let snap = w2.snapshot();
+        let mut w3 = d
+            .resume(
+                &lua,
+                base_env(&lua),
+                snap,
+                "Three",
+                Some(PAGE_ADVANCE_ID.to_string()),
+            )
+            .unwrap();
+        let (ns, stop) = w3.advance_page(&lua).unwrap();
+        assert_eq!(narration_text(&ns), vec!["Three", "third page."]);
+        assert_eq!(
+            stop,
+            SegmentStop::Terminated(TerminationReason::EndOfDialog)
+        );
+    }
+
+    #[test]
+    fn page_walk_honors_explicit_choice_set() {
+        // A paged section that ends in a trailing link-list presents that list,
+        // not a synthetic Continue — paging only fills a fall-through gap.
+        let d = parse(
+            "# Start\n\npick one.\n\n- [Left](#Left)\n- [Right](#Right)\n\n# Left\n\nl\n\n# Right\n\nr\n",
+        );
+        let lua = Lua::new();
+        let mut w = d.walk(&lua, base_env(&lua), 0).unwrap();
+        let (ns, stop) = w.advance_page(&lua).unwrap();
+        assert_eq!(narration_text(&ns), vec!["Start", "pick one."]);
+        match stop {
+            SegmentStop::Present(opts) => {
+                let ids: Vec<&str> = opts.iter().map(|o| o.id.as_str()).collect();
+                assert_eq!(ids, vec!["Left", "Right"]);
+            }
+            other => panic!("expected the authored choice set, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn page_walk_goto_is_transparent() {
+        // A `goto` jumps without a page break: #Start's code sends the walk to
+        // #End, whose narration joins the same page, which then runs off the end.
+        let d = parse(
+            "# Start\n\n```luau\nstate.next = { t = \"goto\", name = \"End\" }\n```\n\n# Skipped\n\nnope\n\n# End\n\ndone.\n",
+        );
+        let lua = Lua::new();
+        let mut w = d.walk(&lua, base_env(&lua), 0).unwrap();
+        let (ns, stop) = w.advance_page(&lua).unwrap();
+        // "Start" heading, then (goto, no break) the "End" heading + its body.
+        assert_eq!(narration_text(&ns), vec!["Start", "End", "done."]);
+        assert_eq!(
+            stop,
+            SegmentStop::Terminated(TerminationReason::EndOfDialog)
+        );
     }
 }

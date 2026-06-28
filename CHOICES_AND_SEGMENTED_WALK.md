@@ -295,6 +295,35 @@ consumers; it gains a parallel `WalkStep::Present(Vec<PresentedOption>)` pause
 variant so a paragraph-stream consumer can also reach choice points. The two
 share the choice-point logic in `exec`.
 
+#### Paged walk (`advance_page`)
+
+A second segmented surface, `advance_page`, is the **heading-boundary** analogue
+of `advance_segment` — for linear, click-through dialogs where each `#` section is
+its own page:
+
+```rust
+impl DialogWalker<'_> {
+    /// Like `advance_segment`, but also pauses at a heading boundary: when a
+    /// section falls through to the next `#` heading with no choice point and no
+    /// `state.next`, returns `SegmentStop::Present` with a single synthetic
+    /// option (`id = PAGE_ADVANCE_ID`, `label = "Continue"`, `target =` the next
+    /// heading) so the caller resumes there next turn.
+    pub fn advance_page(&mut self, lua: &Lua) -> Result<(Vec<Narration<'_>>, SegmentStop), DialogError>;
+}
+
+/// The reserved id of that synthetic "Continue" option (a public const).
+pub const PAGE_ADVANCE_ID: &str;
+```
+
+It reuses the same inner stepper and pause causes; the only addition is the
+heading boundary. A `goto` is **page-transparent** — the jumped-to section opens
+as the page's own section, no synthetic stop — so an explicit `present` / choice
+set / `goto` / `exit` / end-of-dialog behaves exactly as in `advance_segment`.
+`advance_segment` (collect across headings into one segment) stays the default; a
+consumer opts into `advance_page` only when it wants section-per-frame paging.
+Resume is identical: the caller hands back the chosen (here synthetic) option's
+`target`, and the walk continues from that heading.
+
 ### 4.4 Resume contract
 
 A resume needs: the saved `DialogState` (cursor + extras), the **chosen option's

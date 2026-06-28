@@ -25,7 +25,9 @@ pub use dialog::Dialog;
 pub use error::{ChoiceSetError, DialogError, FrontmatterError};
 pub use frontmatter::DialogFrontmatter;
 pub use state::{DialogNext, DialogState, PresentedOption};
-pub use walker::{DialogWalker, Narration, SegmentStop, TerminationReason, WalkStep};
+pub use walker::{
+    DialogWalker, Narration, PAGE_ADVANCE_ID, SegmentStop, TerminationReason, WalkStep,
+};
 
 #[cfg(feature = "editor")]
 mod editor;

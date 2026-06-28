@@ -62,7 +62,11 @@ Source of truth is the editor's [`dialog.rs`](../editor/crates/skill-core/src/di
 > `BlockKind::Choices` + `ChoiceItem`, the `state.next = { t = "present", … }`
 > directive, the managed `state.choice`, per-walk environment isolation,
 > prelude-on-resume, and `Dialog::walk(base_env, …)` / `Dialog::resume(…)` /
-> `DialogWalker::advance_segment` (returning `Narration` + `SegmentStop`). The
+> `DialogWalker::advance_segment` (returning `Narration` + `SegmentStop`).
+> `DialogWalker::advance_page` is the heading-boundary analogue of
+> `advance_segment` — it additionally pauses at each `#` section, emitting a
+> synthetic `PAGE_ADVANCE_ID` "Continue" option, for callers that want
+> section-per-frame paging of linear dialogs. The
 > §5/§6 baseline below still describes the linear core. **Deferred** (§5): the
 > editor's *interactive* branch preview — the linear `simulate_dialog` now stops
 > at a choice point with reason `"present"` rather than walking branches.
