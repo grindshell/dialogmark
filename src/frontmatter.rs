@@ -35,6 +35,16 @@ pub struct DialogFrontmatter {
     /// itself optional server-side).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// Whether each section's `#` heading renders **in the frame body** when this
+    /// dialog drives an interaction (mud.md "Dialogue-driven interactions"). Off
+    /// by default: the frame's panel title already carries the scene label, so the
+    /// section heading is redundant clutter in the body. Set `show_headings: true`
+    /// to surface every section's heading as an in-body header (e.g. a paged,
+    /// tour-style dialog whose pages each want a visible title). The value is a
+    /// boolean flag: exactly `true` enables it; anything else (or absence) leaves
+    /// it off.
+    #[serde(default)]
+    pub show_headings: bool,
     /// Collapsed `author` OR `authors` field. The design constraint forbids
     /// YAML lists here — both keys are always a single string or a multiline
     /// string scalar.
@@ -82,6 +92,7 @@ fn parse_frontmatter_walker(
 ) -> DialogFrontmatter {
     let mut fm = DialogFrontmatter::default();
     let mut saw_name = false;
+    let mut saw_show_headings = false;
     let mut saw_author = false;
     let mut saw_authors = false;
     let mut bailed = false;
@@ -231,6 +242,19 @@ fn parse_frontmatter_walker(
                 }
                 fm.title = Some(value);
             }
+            "show_headings" => {
+                if saw_show_headings
+                    && emit!(FrontmatterError::DuplicateKey {
+                        key: "show_headings".to_string(),
+                    })
+                {
+                    break 'outer;
+                }
+                saw_show_headings = true;
+                // Frontmatter values are strings; treat this as a boolean flag —
+                // only an exact `true` (case-insensitive) enables it.
+                fm.show_headings = value.trim().eq_ignore_ascii_case("true");
+            }
             "author" => {
                 if saw_author
                     && emit!(FrontmatterError::DuplicateKey {
@@ -325,6 +349,35 @@ mod tests {
             err,
             FrontmatterError::DuplicateKey {
                 key: "title".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn show_headings_defaults_off() {
+        let fm = failfast("name: A\n").unwrap();
+        assert!(!fm.show_headings);
+    }
+
+    #[test]
+    fn show_headings_true_enables() {
+        let fm = failfast("name: A\nshow_headings: true\n").unwrap();
+        assert!(fm.show_headings);
+    }
+
+    #[test]
+    fn show_headings_non_true_stays_off() {
+        let fm = failfast("name: A\nshow_headings: false\n").unwrap();
+        assert!(!fm.show_headings);
+    }
+
+    #[test]
+    fn duplicate_show_headings_is_rejected() {
+        let err = failfast("name: A\nshow_headings: true\nshow_headings: true\n").unwrap_err();
+        assert_eq!(
+            err,
+            FrontmatterError::DuplicateKey {
+                key: "show_headings".to_string()
             }
         );
     }
