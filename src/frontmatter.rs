@@ -27,6 +27,14 @@ pub struct DialogFrontmatter {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// The frame **title** shown when this dialog drives a zone interaction
+    /// (mud.md "Dialogue-driven interactions"). Authored here so the editor's
+    /// generated `zone_interactions.luau` can lift it into each
+    /// `reg:register_interaction` def, instead of the title being hand-written
+    /// at registration time. Free text; optional (an interaction `title` is
+    /// itself optional server-side).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// Collapsed `author` OR `authors` field. The design constraint forbids
     /// YAML lists here — both keys are always a single string or a multiline
     /// string scalar.
@@ -59,10 +67,10 @@ pub fn parse_frontmatter_lenient(yaml: &str) -> (DialogFrontmatter, Vec<Frontmat
     (fm, errors)
 }
 
-/// Non-empty + all ASCII alphanumeric. Matches the `system_name` convention
-/// used elsewhere in Grindshell.
+/// Non-empty + all ASCII alphanumeric or underscore. Matches the `system_name`
+/// convention used elsewhere in Grindshell (`^[A-Za-z0-9_]+$`).
 fn is_valid_name(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric())
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Shared YAML-subset walker. `on_error` decides whether to keep going
@@ -213,6 +221,16 @@ fn parse_frontmatter_walker(
                 }
                 fm.description = Some(value);
             }
+            "title" => {
+                if fm.title.is_some()
+                    && emit!(FrontmatterError::DuplicateKey {
+                        key: "title".to_string(),
+                    })
+                {
+                    break 'outer;
+                }
+                fm.title = Some(value);
+            }
             "author" => {
                 if saw_author
                     && emit!(FrontmatterError::DuplicateKey {
@@ -295,9 +313,32 @@ mod tests {
     }
 
     #[test]
+    fn title_parses() {
+        let fm = failfast("name: A\ntitle: Guild Outfitter\n").unwrap();
+        assert_eq!(fm.title.as_deref(), Some("Guild Outfitter"));
+    }
+
+    #[test]
+    fn duplicate_title_is_rejected() {
+        let err = failfast("name: A\ntitle: One\ntitle: Two\n").unwrap_err();
+        assert_eq!(
+            err,
+            FrontmatterError::DuplicateKey {
+                key: "title".to_string()
+            }
+        );
+    }
+
+    #[test]
     fn invalid_name_alphanumeric_only() {
         let err = failfast("name: has space\n").unwrap_err();
         assert!(matches!(err, FrontmatterError::InvalidName { .. }));
+    }
+
+    #[test]
+    fn underscore_name_parses() {
+        let fm = failfast("name: wire_tender\n").unwrap();
+        assert_eq!(fm.name, "wire_tender");
     }
 
     #[test]

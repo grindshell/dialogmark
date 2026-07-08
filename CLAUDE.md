@@ -84,8 +84,9 @@ Recognized keys:
 
 | Key | Required | Notes |
 |---|---|---|
-| `name` | yes | Alphanumeric ASCII only. Validated via an `is_valid_name`-equivalent. |
+| `name` | yes | Alphanumeric ASCII plus underscore (`^[A-Za-z0-9_]+$`). Validated via an `is_valid_name`-equivalent. |
 | `description` | no | Free text. |
+| `title` | no | Free text. The frame title shown when the dialog drives a zone interaction (mud.md "Dialogue-driven interactions"); the editor's `zone_interactions.luau` export lifts it into each `register_interaction` def. |
 | `author` / `authors` | no | String or multiline string. **Never a list.** Aliases collapse to one field; duplicates warn. |
 
 ### Body
