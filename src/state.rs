@@ -44,6 +44,14 @@ pub struct DialogState {
     pub previous_heading: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next: Option<DialogNext>,
+    /// A per-segment **managed** override for whether this frame's `#` heading
+    /// renders in the body: a code block sets `state.show_heading = true` (or
+    /// `false`) to override the dialog-wide frontmatter `show_headings` default
+    /// for the section it runs in. `None` when the script didn't set it (use the
+    /// frontmatter default). Like `next` it is runtime-owned — never seeded from a
+    /// resumed snapshot's extras — so it resets each segment (hence *per-section*).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_heading: Option<bool>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extras: BTreeMap<String, serde_json::Value>,
 }

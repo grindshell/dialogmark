@@ -31,6 +31,10 @@ const MANAGED_KEYS: &[&str] = &[
     "previous_heading",
     "next",
     "choice",
+    // A per-segment heading-visibility override (surfaced on `DialogState`, not as
+    // an extra): runtime-owned so it is neither restored on resume nor snapshotted
+    // into `extras`, which is what makes it reset each segment.
+    "show_heading",
 ];
 
 /// A parsed `state.next` directive read after a code block runs. The walker /
@@ -271,7 +275,18 @@ pub(crate) fn build_state_snapshot(
         current_heading: current_heading.clone(),
         previous_heading: previous_heading.clone(),
         next,
+        show_heading: read_show_heading(state_t),
         extras: snapshot_extras(state_t),
+    }
+}
+
+/// Read the script-set `state.show_heading` per-segment heading override: `Some`
+/// only for an explicit boolean, `None` for anything else (unset / non-bool),
+/// meaning "use the frontmatter default".
+fn read_show_heading(state_t: &Table) -> Option<bool> {
+    match state_t.get::<Value>("show_heading") {
+        Ok(Value::Boolean(b)) => Some(b),
+        _ => None,
     }
 }
 

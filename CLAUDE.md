@@ -104,11 +104,12 @@ Lists, blockquotes, tables, indented code, inline HTML are **skipped** during bl
 
 - A single Luau VM persists across the whole run.
 - A single `state` table threads across all blocks.
-- Four **runtime-managed** fields on `state`:
+- **Runtime-managed** fields on `state` (owned by the walker, filtered out of `extras`):
   - `idx` — 0-based block index.
   - `current_heading` — text of the most recent heading.
   - `previous_heading` — previous heading text, or `nil`.
   - `next` — redirect spec; **cleared at the top of each block**, set by the script to redirect.
+  - `show_heading` — optional per-segment override (`true`/`false`) of whether this frame's `#` heading renders in the body; surfaced on `DialogState.show_heading` for the consumer to resolve over the frontmatter `show_headings` default. Runtime-managed like `next` (never seeded from a resumed snapshot), so it **resets each segment** — a script sets it per section.
 - Any other field the script attaches (`state.flag = true`, `state.counter = 1`, …) is treated as a **user "extra"** and persists across blocks. Extras are surfaced back to callers as a `BTreeMap<String, serde_json::Value>`.
 - Redirect form: `state.next = { t = "goto", name = "<HeadingText>" }`. Heading lookup is by exact text match. Missing target → terminate with reason `goto_target_missing`.
 - Exit form: `state.next = { t = "exit" }`. Terminates immediately with reason `exit`.

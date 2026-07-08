@@ -973,6 +973,46 @@ mod tests {
         assert!(lua.globals().get::<Value>("MARK").unwrap().is_nil());
     }
 
+    #[test]
+    fn segment_surfaces_show_heading_override() {
+        // A code block's `state.show_heading` lands on the snapshot as a managed
+        // field (a per-segment heading-visibility override), not as an extra.
+        let d = parse("# S\n\n```luau\nstate.show_heading = true\n```\n\nbody.\n");
+        let lua = Lua::new();
+        let mut w = d.walk(&lua, base_env(&lua), 0).unwrap();
+        let _ = w.advance_segment(&lua).unwrap();
+        let snap = w.snapshot();
+        assert_eq!(snap.show_heading, Some(true));
+        assert!(
+            !snap.extras.contains_key("show_heading"),
+            "show_heading is managed, not an author extra"
+        );
+    }
+
+    #[test]
+    fn show_heading_override_resets_each_segment() {
+        // Section A opts its heading in; section B does not. Resuming into B must
+        // see `None` — the override never rides `extras`, so it can't leak forward.
+        let d = parse(
+            "# A\n\n```luau\nstate.show_heading = true\nstate.next = { t = \"present\", options = { { id = \"go\", label = \"Go\", target = \"B\" } } }\n```\n\n# B\n\nbody.\n",
+        );
+        let lua = Lua::new();
+        let mut w = d.walk(&lua, base_env(&lua), 0).unwrap();
+        let _ = w.advance_segment(&lua).unwrap();
+        let snap = w.snapshot();
+        assert_eq!(snap.show_heading, Some(true));
+
+        let mut w2 = d
+            .resume(&lua, base_env(&lua), snap, "B", Some("go".to_string()))
+            .unwrap();
+        let _ = w2.advance_segment(&lua).unwrap();
+        assert_eq!(
+            w2.snapshot().show_heading,
+            None,
+            "the per-segment override does not carry into the next segment"
+        );
+    }
+
     // --- paged walk (advance_page, CHOICES_AND_SEGMENTED_WALK.md §4.3) ---------
 
     #[test]
