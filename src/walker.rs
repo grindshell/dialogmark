@@ -1017,8 +1017,7 @@ mod tests {
 
     #[test]
     fn page_walk_breaks_at_each_heading() {
-        let d =
-            parse("# One\n\nfirst page.\n\n# Two\n\nsecond page.\n\n# Three\n\nthird page.\n");
+        let d = parse("# One\n\nfirst page.\n\n# Two\n\nsecond page.\n\n# Three\n\nthird page.\n");
         let lua = Lua::new();
         let mut w = d.walk(&lua, base_env(&lua), 0).unwrap();
 
