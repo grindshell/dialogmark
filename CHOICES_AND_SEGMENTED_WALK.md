@@ -1,8 +1,9 @@
 # Choice sets and the segmented walk
 
-Status: **implemented** (runtime + parser, 2026-06-27) — except the editor
-interactive-preview parity in §5, which stays deferred (the linear
-`simulate_dialog` stops at a choice point with reason `"present"`). This document
+Status: **implemented** (runtime + parser, 2026-06-27). §5's interactive
+preview shipped in the editor on 2026-06-28 by driving the segmented runtime walk
+(`editor/crates/skill-core/src/dialog_preview.rs` `preview_dialog_step`); the
+linear `simulate_dialog` still stops at a choice point with reason `"present"`. This document
 specifies the format and runtime additions that let a dialog drive a host's
 *choice-per-turn* interaction session (a recruiter menu, a vendor, a
 quest-giver) rather than only a linear paragraph stream.

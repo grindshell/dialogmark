@@ -14,8 +14,9 @@
 //! Termination reason strings ("end_of_dialog", "exit", "goto_target_missing",
 //! "step_limit", "execution_error", "prelude_invalid") match what the editor
 //! frontend already consumes; "present" is added when the linear walk stops at
-//! a choice point (a `present` directive or a trailing choice set — interactive
-//! branch preview is deferred, CHOICES_AND_SEGMENTED_WALK.md §5).
+//! a choice point (a `present` directive or a trailing choice set). Interactive
+//! branch preview is the editor's own `preview_dialog_step`, which drives the
+//! runtime walk rather than this one.
 
 use mlua::Lua;
 use serde::{Deserialize, Serialize};
@@ -263,7 +264,7 @@ pub fn simulate_dialog(content: &str, lua: &Lua, start_idx: usize) -> DialogSimu
         let mut hit_error = false;
         // A choice point the linear simulator stops at (a `present` directive or
         // a trailing choice set): the option labels for the message. Interactive
-        // branch preview is the editor's deferred work (CHOICES_AND_SEGMENTED_WALK.md §5).
+        // branch preview drives the runtime walk (the editor's `preview_dialog_step`).
         let mut present_labels: Option<Vec<String>> = None;
 
         match block.kind {

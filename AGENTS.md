@@ -41,7 +41,7 @@ Tests are inline `#[cfg(test)]` modules — 76 pass on default features, 107 wit
 - [`../backend/Cargo.toml`](../backend/Cargo.toml) — default (runtime) features. `crates/game` parses dialogs into `Arc<Dialog>` at registry load and drives its interaction sessions off `walk` / `resume` / `advance_page`.
 - [`../editor/crates/skill-core/Cargo.toml`](../editor/crates/skill-core/Cargo.toml) — `features = ["editor"]`. `skill-core/src/dialog.rs` re-exports the surface and hands `simulate_dialog` a VM preloaded with the editor's preview modules.
 
-The choice-set / segmented-walk extension spec'd in [CHOICES_AND_SEGMENTED_WALK.md](CHOICES_AND_SEGMENTED_WALK.md) is built as well; see the note in §5 for what remains deferred.
+The choice-set / segmented-walk extension spec'd in [CHOICES_AND_SEGMENTED_WALK.md](CHOICES_AND_SEGMENTED_WALK.md) is built as well; see the note in §5.
 
 ## 3. Tech stack
 
@@ -90,9 +90,11 @@ This crate is now the source of truth for the format; the summary below tracks [
 > `advance_segment` — it additionally pauses at each `#` section, emitting a
 > synthetic `PAGE_ADVANCE_ID` "Continue" option, for callers that want
 > section-per-frame paging of linear dialogs. The
-> §5/§6 baseline below still describes the linear core. **Deferred** (§5): the
-> editor's *interactive* branch preview — the linear `simulate_dialog` now stops
-> at a choice point with reason `"present"` rather than walking branches.
+> §5/§6 baseline below still describes the linear core. The editor's
+> *interactive* branch preview drives this runtime walk itself
+> (`editor/crates/skill-core/src/dialog_preview.rs` `preview_dialog_step`, since
+> 2026-06-28); the linear `simulate_dialog` stops at a choice point with reason
+> `"present"` rather than walking branches.
 
 ### Frontmatter
 

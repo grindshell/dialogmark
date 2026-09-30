@@ -1,8 +1,8 @@
 //! Dialogmark — Markdown + Luau dialog parsing for Grindshell.
 //!
 //! This crate parses `.md` dialog files (YAML-style frontmatter + body) into
-//! a structured `Dialog`, and (in a follow-up pass) walks them against a
-//! caller-supplied Luau VM.
+//! a structured `Dialog`, and walks them against a caller-supplied Luau VM
+//! ([`DialogWalker`]).
 //!
 //! Two surfaces, sharing one parser:
 //!
