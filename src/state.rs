@@ -1,7 +1,6 @@
-//! Persistent dialog state threaded across blocks during simulation.
-//!
-//! These types are not used by the parsing pass, but land here now so the
-//! simulation pass that follows can plug into a stable module layout.
+//! Persistent dialog state threaded across blocks during a walk: the runtime
+//! walker's save points (`DialogWalker::snapshot` / `Dialog::resume`) and the
+//! editor's `simulate_dialog` trace both carry it.
 
 use std::collections::BTreeMap;
 

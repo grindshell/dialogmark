@@ -1,9 +1,11 @@
 //! Block walker for dialog markdown.
 //!
-//! The dialog runtime considers exactly three Markdown structures as "blocks":
-//! headings, paragraphs, and fenced code blocks. Lists, blockquotes, tables,
-//! indented code, and the YAML metadata block are skipped — they do not
-//! advance the `idx` cursor.
+//! The dialog runtime considers exactly four Markdown structures as "blocks":
+//! headings, paragraphs, fenced code blocks, and choice sets (a top-level list
+//! whose every item is a `[label](#Target)` link). A list with no links,
+//! blockquotes, tables, indented code, and the YAML metadata block are
+//! skipped — they do not advance the `idx` cursor. A list mixing links and
+//! non-links is a [`ChoiceSetError::Malformed`].
 
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
@@ -96,13 +98,14 @@ enum ActiveBlock {
 }
 
 /// Walk the dialog's markdown event stream once and return the top-level
-/// heading/paragraph/fenced-code blocks in order.
+/// heading/paragraph/fenced-code/choice-set blocks in order.
 pub fn extract_blocks(content: &str) -> Vec<DialogBlock> {
     walk_dialog(content).1
 }
 
 /// Single-pass walk that lifts both the YAML metadata block's raw text and
-/// the top-level heading/paragraph/fenced-code blocks out of `content`.
+/// the top-level heading/paragraph/fenced-code/choice-set blocks out of
+/// `content`, plus any choice-set faults.
 ///
 /// Used by [`crate::Dialog::parse`] so the runtime parses the dialog markdown
 /// exactly once. The standalone [`extract_blocks`] is a thin wrapper that

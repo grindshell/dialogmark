@@ -1,8 +1,9 @@
-//! Error types for dialog parsing.
+//! Error types for dialog parsing and walking.
 //!
 //! [`FrontmatterError`] is the leaf diagnostic produced by the YAML-subset
-//! walker. [`DialogError`] wraps it (and will grow more variants when the
-//! simulation pass lands).
+//! walker, and [`ChoiceSetError`] the one for a malformed or non-trailing choice
+//! set. [`DialogError`] wraps both, plus the VM plumbing failures a walk can hit
+//! (`StateInit`, `LuaInternal`).
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

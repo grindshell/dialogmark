@@ -104,7 +104,8 @@ pub(crate) fn seed_extras(
     Ok(())
 }
 
-/// Reset the four runtime-owned fields on `state_t` for the block at `idx`.
+/// Reset the per-block runtime-owned fields (`idx`, `current_heading`,
+/// `previous_heading`, `next`) on `state_t` for the block at `idx`.
 /// Crucially, `state.next` is cleared to nil so a stale redirect from the
 /// previous block doesn't re-fire.
 pub(crate) fn refresh_managed_fields(
@@ -242,9 +243,10 @@ fn req_string(t: &Table, key: &str, i: usize) -> mlua::Result<String> {
     }
 }
 
-/// Snapshot of every user-defined field on `state_t`. The four managed keys
-/// are skipped; everything else is converted to a `serde_json::Value` for
-/// cross-process persistence.
+/// Snapshot of every user-defined field on `state_t`. The six managed keys
+/// (`idx`, `current_heading`, `previous_heading`, `next`, `choice`,
+/// `show_heading`) are skipped; everything else is converted to a
+/// `serde_json::Value` for cross-process persistence.
 pub(crate) fn snapshot_extras(state_t: &Table) -> BTreeMap<String, serde_json::Value> {
     let mut out = BTreeMap::new();
     for pair in state_t.clone().pairs::<Value, Value>() {
@@ -260,9 +262,10 @@ pub(crate) fn snapshot_extras(state_t: &Table) -> BTreeMap<String, serde_json::V
     out
 }
 
-/// Assemble a full `DialogState` snapshot from `state_t`. The four managed
-/// fields are passed in explicitly so they reflect the cursor / heading state
-/// at the trace step, not whatever stale value the table still holds.
+/// Assemble a full `DialogState` snapshot from `state_t`. Four of the managed
+/// fields (`idx`, `current_heading`, `previous_heading`, `next`) are passed in
+/// explicitly so they reflect the cursor / heading state at the trace step, not
+/// whatever stale value the table still holds.
 pub(crate) fn build_state_snapshot(
     state_t: &Table,
     idx: usize,

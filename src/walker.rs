@@ -2,7 +2,7 @@
 //!
 //! [`DialogWalker`] is constructed via [`Dialog::walk`](crate::Dialog::walk)
 //! (fresh start) or [`Dialog::resume`](crate::Dialog::resume) (resumed from a
-//! saved snapshot at a chosen heading). Two advance surfaces share one block
+//! saved snapshot at a chosen heading). Three advance surfaces share one block
 //! stepper:
 //!
 //! - [`DialogWalker::advance`] runs forward to the next **paragraph**, choice
@@ -11,6 +11,9 @@
 //!   termination, **collecting** the narration walked along the way — the
 //!   choice-per-turn surface a host's interaction session drives
 //!   (CHOICES_AND_SEGMENTED_WALK.md §4).
+//! - [`DialogWalker::advance_page`] is `advance_segment` that also pauses at
+//!   each `#` heading boundary, surfacing a synthetic [`PAGE_ADVANCE_ID`]
+//!   "Continue" option: section-per-frame paging of a linear dialog.
 //!
 //! The walker never owns an `mlua::Lua` — it borrows one for the duration of
 //! each call. Each walk runs its blocks in a **per-walk environment** chained to
@@ -95,8 +98,8 @@ pub enum TerminationReason {
     PreludeInvalid { block_idx: usize, line: usize },
 }
 
-/// What processing one block produced — the shared unit both advance surfaces
-/// drive their loop with.
+/// What processing one block produced — the shared unit all three advance
+/// surfaces drive their loop with.
 enum Step<'a> {
     /// A paragraph or heading text to surface / collect.
     Narration(Narration<'a>),
