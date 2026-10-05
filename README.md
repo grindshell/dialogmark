@@ -118,7 +118,7 @@ state = {
 }
 ```
 
-Any other field you attach (`state.flag = true`, `state.counter = 1`) is a user **extra** and persists across blocks and across save points. The managed fields above do not: `next` and `show_heading` reset every block, and `choice` is set only when resuming from a player's selection.
+Any other field you attach (`state.flag = true`, `state.counter = 1`) is a user **extra** and persists across blocks and across save points. The managed fields above do not: `next` resets every block, `show_heading` resets every segment (a resume never restores it), and `choice` is set only when resuming from a player's selection.
 
 #### Redirects
 
@@ -216,7 +216,7 @@ match walker.advance_segment(&lua)? {
 
 dialogmark owns no Luau VM — you supply the `&Lua` and a base environment table, which is where you install your own modules. The `editor` Cargo feature adds an authoring surface (HTML rendering, collect-all-errors validation, and `simulate_dialog` with a per-block trace) on top of the runtime one.
 
-See [CLAUDE.md](CLAUDE.md) for the full API and [CHOICES_AND_SEGMENTED_WALK.md](CHOICES_AND_SEGMENTED_WALK.md) for the choice-set and segmented-walk design.
+See [AGENTS.md](AGENTS.md) for the full API and [CHOICES_AND_SEGMENTED_WALK.md](CHOICES_AND_SEGMENTED_WALK.md) for the choice-set and segmented-walk design.
 
 ## License
 

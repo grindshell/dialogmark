@@ -13,7 +13,7 @@ Dialogmark is a Rust library that parses Markdown files with embedded Luau code 
 
 Dialogmark **replaced** two earlier implementations and is now the single source of truth for dialog handling across Grindshell:
 
-- [`../backend/crates/plugin`](../backend/crates/plugin) — was a half-finished runtime implementation. Its dialog code is gone; what remains is the VM wiring (`Plugin`, `@grindshell/fs`, `@grindshell/convert`), and `crates/game` consumes Dialogmark directly.
+- [`../backend/crates/plugin`](../backend/crates/plugin) — was a half-finished runtime implementation. Its dialog code is gone; what remains is the VM wiring (`Host` and the `@grindshell/*` helper modules), and `crates/game` consumes Dialogmark directly.
 - [`../editor/crates/skill-core/src/dialog.rs`](../editor/crates/skill-core/src/dialog.rs) — was the finished editor-side implementation. Now a thin re-export shim over Dialogmark plus the editor's preview-VM setup.
 
 Dialogmark lifted the editor's mature surface into a standalone crate and leaves VM extensions (fs, convert, JSON, …) to the consumer.
@@ -38,8 +38,8 @@ Tests are inline `#[cfg(test)]` modules — 76 pass on default features, 107 wit
 
 **Consumers.** Both downstream repos already depend on this crate by path, so a change here is a breaking change for both:
 
-- [`../backend/Cargo.toml`](../backend/Cargo.toml) — default (runtime) features. `crates/game` parses dialogs into `Arc<Dialog>` at registry load and drives its interaction sessions off `walk` / `resume` / `advance_page`.
-- [`../editor/crates/skill-core/Cargo.toml`](../editor/crates/skill-core/Cargo.toml) — `features = ["editor"]`. `skill-core/src/dialog.rs` re-exports the surface and hands `simulate_dialog` a VM preloaded with the editor's preview modules.
+- [`../backend/Cargo.toml`](../backend/Cargo.toml) — default (runtime) features. `crates/game` parses dialogs into `Arc<Dialog>` at registry load and drives its interaction sessions off `walk` / `resume` / `advance_segment` (or `advance_page` for a paged session).
+- [`../editor/crates/skill-core/Cargo.toml`](../editor/crates/skill-core/Cargo.toml) — `features = ["editor"]`. `skill-core/src/dialog.rs` re-exports the surface and hands `simulate_dialog` a VM preloaded with the editor's preview modules. `skill-core/src/dialog_preview.rs` drives `walk` / `resume` for the interactive preview, and the export (`src-tauri/src/export.rs` `validate_dialogs`) blocks on any dialog `Dialog::parse` refuses.
 
 The choice-set / segmented-walk extension spec'd in [CHOICES_AND_SEGMENTED_WALK.md](CHOICES_AND_SEGMENTED_WALK.md) is built as well; see the note in §5.
 
@@ -117,13 +117,14 @@ Recognized keys:
 
 ### Body
 
-Markdown with three structural elements that matter for the dialog tree:
+Markdown with four structural elements that matter for the dialog tree:
 
 - **Headings** (any level, 1–6) — node boundaries.
 - **Paragraphs** — narration shown to the player.
-- **Fenced code blocks** — Luau, lifted into `function(state) … end` and threaded against a persistent state table.
+- **Fenced code blocks** — Luau, run as a chunk in the walk's environment (where `state` is a global) and threaded against a persistent state table.
+- **Choice sets**: a section's trailing top-level list of `[label](#Target)` links (see the note above).
 
-Lists, blockquotes, tables, indented code, inline HTML are **skipped** during block extraction (depth > 0 in the event walker). They render in HTML preview but don't contribute to the dialog flow.
+Lists with no links, blockquotes, tables, indented code, inline HTML are **skipped** during block extraction; a list mixing links and non-links is a parse error. Skipped elements render in HTML preview but don't contribute to the dialog flow.
 
 ### Control flow
 
@@ -142,7 +143,7 @@ Lists, blockquotes, tables, indented code, inline HTML are **skipped** during bl
 
 ### Prelude
 
-Code blocks **before the first heading** auto-execute once at the start of every run, regardless of where the run starts. They share the walk's Luau VM, so they're the natural place for helper definitions and global setup. `state.next` set during the prelude **does redirect / terminate**.
+Code blocks **before the first heading** auto-execute once at the start of every run, regardless of where the run starts. They share the walk's Luau VM, so they're the natural place for helper definitions and global setup. `state.next` set during the prelude **does redirect / terminate** a fresh walk; a resume re-runs the prelude for its helpers and ignores its `state.next`.
 
 **Paragraphs before the first heading are a validation error.** Simulation returns `terminated_reason = "prelude_invalid"` before any Luau executes. Narration belongs under a heading.
 
@@ -178,7 +179,7 @@ Lean, performance-oriented surface used during actual gameplay. **Assumes the di
 - `advance_segment(&mut self, lua: &Lua) -> Result<(Vec<Narration>, SegmentStop), DialogError>` — run to the next choice point or termination, **collecting** the narration walked along the way. The choice-per-turn surface.
 - `advance_page(&mut self, lua: &Lua) -> Result<(Vec<Narration>, SegmentStop), DialogError>` — as `advance_segment`, but also pausing at each `#` heading boundary, emitting a synthetic one-option `SegmentStop::Present` with id `PAGE_ADVANCE_ID` ("Continue"). Section-per-frame paging of linear dialogs. A `goto` is page-transparent.
 
-Plus `snapshot(&self) -> DialogState` (save points — `idx`, headings, `extras`; the managed `next` / `choice` are deliberately not surfaced) and `cursor(&self) -> usize`.
+Plus `snapshot(&self) -> DialogState` (save points — `idx`, headings, `show_heading`, `extras`; the managed `next` / `choice` are deliberately not surfaced) and `cursor(&self) -> usize`.
 
 All three advance methods are idempotent once terminated. `Err` is reserved for VM plumbing failures Dialogmark can't recover from — script faults come back as a `TerminationReason`, not an `Err`.
 
@@ -204,8 +205,8 @@ Errors are `thiserror`-derived enums — `DialogError` (the wrapper, with `Front
 
 **Dialogmark owns no `mlua::Lua`.** Every function that executes Luau (runtime stepper, editor `simulate_dialog`) takes a caller-supplied `&Lua` (or `&mut Lua` where it signals intent better). Callers wire VM extensions on their side:
 
-- Editor: hand in an empty VM — only `state` is exposed by Dialogmark.
-- Backend: hand in a sandboxed `Plugin` VM with `@grindshell/fs`, `@grindshell/convert`, etc. already loaded.
+- Editor: hand in a VM with `@grindshell/check` and a stubbed `@grindshell/interaction` registered, plus a `ctx` (zeroed for `simulate_dialog`, mocked for the interactive preview); see `skill-core/src/dialog_preview.rs`.
+- Backend: hand in the plugin `Host` VM (its `@grindshell/*` modules, plus `@grindshell/interaction`) and a base env carrying `ctx`; see `crates/game/src/interaction/dialog.rs`.
 
 Game-specific Luau modules are **out of scope** for this crate.
 
