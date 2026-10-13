@@ -26,7 +26,7 @@ authors: <optional string>
 | `name` | yes | Alphanumeric ASCII plus underscore (`^[A-Za-z0-9_]+$`). No spaces or dashes. |
 | `description` | no | Free text. |
 | `title` | no | Free text. The frame title shown when the dialog drives a zone interaction. |
-| `show_headings` | no | Set `show_headings: true` to render each section's `#` heading in the frame body. Off by default — the frame's panel title already carries the scene label. Exactly `true` enables it; anything else leaves it off. A code block can override it per section with `state.show_heading`. |
+| `show_headings` | no | Set `show_headings: true` to render each section's `#` heading in the frame body. Off by default — the frame's panel title already carries the scene label. `true` in any case (`True`, `TRUE`) enables it; anything else leaves it off. A code block can override it per section with `state.show_heading`. |
 | `author` / `authors` | no | A single string, never a list. The two spellings are aliases — use one or the other, not both. |
 
 Values may use the block-scalar markers `|` (keep newlines) or `>` (fold to spaces):

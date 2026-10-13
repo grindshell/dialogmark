@@ -41,8 +41,8 @@ pub struct DialogFrontmatter {
     /// section heading is redundant clutter in the body. Set `show_headings: true`
     /// to surface every section's heading as an in-body header (e.g. a paged,
     /// tour-style dialog whose pages each want a visible title). The value is a
-    /// boolean flag: exactly `true` enables it; anything else (or absence) leaves
-    /// it off.
+    /// boolean flag: `true` in any case enables it; anything else (or absence)
+    /// leaves it off.
     #[serde(default)]
     pub show_headings: bool,
     /// Collapsed `author` OR `authors` field. The design constraint forbids
