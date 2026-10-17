@@ -83,24 +83,31 @@ pub fn simulate_dialog(content: &str, lua: &Lua, start_idx: usize) -> DialogSimu
     let blocks_total = blocks.len();
     let first_heading_idx = exec::first_heading_idx(&blocks);
 
-    // Reject prelude paragraphs before any Luau executes.
+    // Only code blocks may precede the first heading, the runtime walker's rule
+    // (`run_prelude`). Rejected before any Luau executes: a choice set's text
+    // would otherwise be run as a chunk.
     for b in &blocks[..first_heading_idx] {
-        if b.kind == BlockKind::Paragraph {
-            return DialogSimulationResult {
-                blocks_total,
-                trace: vec![],
-                final_state: DialogState {
-                    idx: b.idx,
-                    ..Default::default()
-                },
-                terminated_reason: "prelude_invalid".to_string(),
-                terminated_message: Some(format!(
-                    "paragraph at block #{} (line {}) is not allowed before the first heading; \
-                     prelude must contain only code blocks",
-                    b.idx, b.start_line
-                )),
-            };
-        }
+        let what = match b.kind {
+            BlockKind::Code => continue,
+            BlockKind::Paragraph => "paragraph",
+            BlockKind::Choices => "choice set",
+            // Unreachable: the slice ends at the first heading.
+            BlockKind::Heading => "heading",
+        };
+        return DialogSimulationResult {
+            blocks_total,
+            trace: vec![],
+            final_state: DialogState {
+                idx: b.idx,
+                ..Default::default()
+            },
+            terminated_reason: "prelude_invalid".to_string(),
+            terminated_message: Some(format!(
+                "{what} at block #{} (line {}) is not allowed before the first heading; \
+                 prelude must contain only code blocks",
+                b.idx, b.start_line
+            )),
+        };
     }
 
     let state_t = match exec::create_state_table(lua) {
@@ -544,6 +551,23 @@ mod tests {
         assert!(r.trace.is_empty());
         let msg = r.terminated_message.as_deref().unwrap_or("");
         assert!(msg.contains("paragraph") && msg.contains("first heading"));
+    }
+
+    #[test]
+    fn simulate_prelude_choice_set_is_invalid() {
+        // Only code may precede the first heading. A choice set there is
+        // rejected like a paragraph, before any Luau runs, never executed as a
+        // chunk (which is what a release build used to do with its text).
+        let src = "- [Go](#Scene)\n- [Stay](#Scene)\n\n# Scene\n\nbody\n";
+        let r = sim(src, 0);
+        assert_eq!(r.terminated_reason, "prelude_invalid");
+        assert!(r.trace.is_empty());
+        assert_eq!(r.final_state.idx, 0);
+        let msg = r.terminated_message.as_deref().unwrap_or("");
+        assert!(
+            msg.contains("choice set") && msg.contains("first heading"),
+            "{msg}"
+        );
     }
 
     #[test]

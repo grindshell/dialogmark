@@ -34,7 +34,7 @@ Dialogmark lifted the editor's mature surface into a standalone crate and leaves
 | `editor.rs` (feature `editor`) | `parse_dialog` — collect-all-errors parse + HTML render. |
 | `sim.rs` (feature `editor`) | `simulate_dialog` — linear walk with a per-block trace. |
 
-Tests are inline `#[cfg(test)]` modules — 76 pass on default features, 107 with `--features editor`.
+Tests are inline `#[cfg(test)]` modules — 76 pass on default features, 108 with `--features editor`.
 
 **Consumers.** Both downstream repos already depend on this crate by path, so a change here is a breaking change for both:
 
@@ -65,7 +65,7 @@ Edition `2024`. No async dependency in the crate itself — Dialogmark is pure /
 ```
 cargo build
 cargo test                                          # 76 tests, runtime surface
-cargo test --features editor                        # 107 tests, adds editor.rs + sim.rs
+cargo test --features editor                        # 108 tests, adds editor.rs + sim.rs
 cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt
 ```
